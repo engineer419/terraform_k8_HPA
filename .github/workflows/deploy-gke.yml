@@ -1,168 +1,36 @@
-name: Deploy GKE Cluster
-
-on:
-  push:
-    branches:
-      - main
-    paths:
-      - 'terraform/**'
-      - '.github/workflows/deploy-gke.yml'
-  workflow_dispatch:
-
-env:
-  TF_VERSION: '1.6.0'
-  GCP_PROJECT_ID: 'k8-cognitive-universe'
-  GCP_REGION: 'us-central1'
-  GCP_ZONE: 'us-central1-a'
-
 jobs:
   terraform:
     name: 'Terraform Apply'
     runs-on: ubuntu-latest
-    
-    defaults:
-      run:
-        working-directory: ./terraform
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+    # ... your existing terraform steps ...
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TF_VERSION }}
-
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
-        with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
-
-      - name: Setup gcloud CLI
-        uses: google-github-actions/setup-gcloud@v2
-        with:
-          project_id: ${{ env.GCP_PROJECT_ID }}
-          install_components: 'gke-gcloud-auth-plugin'
-
-      - name: Get Cluster Credentials (if exists)
-        continue-on-error: true
-        run: |
-          gcloud container clusters get-credentials my-gke-cluster \
-            --zone ${{ env.GCP_ZONE }} \
-            --project ${{ env.GCP_PROJECT_ID }}
-
-      - name: Terraform Init
-        run: terraform init
-        
-      - name: Terraform Format Check
-        run: terraform fmt -check
-        continue-on-error: true
-
-      - name: Terraform Validate
-        run: terraform validate
-
-      - name: Import Existing Resources
-        continue-on-error: true
-        run: |
-          # Import VPC if it exists
-          terraform import google_compute_network.vpc projects/k8-cognitive-universe/global/networks/my-gke-cluster-vpc 2>/dev/null || true
-          
-          # Import Subnet if it exists
-          terraform import google_compute_subnetwork.subnet projects/k8-cognitive-universe/regions/us-central1/subnetworks/my-gke-cluster-subnet 2>/dev/null || true
-          
-          # Import Cluster if it exists
-          terraform import google_container_cluster.primary projects/k8-cognitive-universe/locations/us-central1-a/clusters/my-gke-cluster 2>/dev/null || true
-          
-          # Import Node Pool if it exists
-          terraform import google_container_node_pool.primary_nodes projects/k8-cognitive-universe/locations/us-central1-a/clusters/my-gke-cluster/nodePools/my-gke-cluster-node-pool 2>/dev/null || true
-
-      - name: Terraform Plan
-        id: plan
-        run: |
-          terraform plan -out=tfplan -no-color
-          terraform show -no-color tfplan > plan_output.txt
-          if grep -q "No changes" plan_output.txt; then
-            echo "has_changes=false" >> $GITHUB_OUTPUT
-          else
-            echo "has_changes=true" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Terraform Apply
-        if: steps.plan.outputs.has_changes == 'true'
-        run: terraform apply -auto-approve tfplan
-
-      - name: Get Cluster Credentials
-        run: |
-          gcloud container clusters get-credentials my-gke-cluster \
-            --zone ${{ env.GCP_ZONE }} \
-            --project ${{ env.GCP_PROJECT_ID }}
-
-      - name: Verify Cluster
-        run: |
-          kubectl get nodes
-          kubectl cluster-info
-
-      - name: Output Summary
-        run: |
-          echo "### GKE Cluster Status" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Cluster Name:** my-gke-cluster" >> $GITHUB_STEP_SUMMARY
-          echo "**Zone:** ${{ env.GCP_ZONE }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Changes Applied:** ${{ steps.plan.outputs.has_changes }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Nodes:**" >> $GITHUB_STEP_SUMMARY
-          kubectl get nodes >> $GITHUB_STEP_SUMMARY
-  
   deploy-keda:
     name: 'Deploy KEDA'
     runs-on: ubuntu-latest
     needs: terraform
-    
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v4
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
-
       - name: Setup gcloud CLI
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ env.GCP_PROJECT_ID }}
           install_components: 'gke-gcloud-auth-plugin'
-
       - name: Get Cluster Credentials
         run: |
           gcloud container clusters get-credentials my-gke-cluster \
             --zone ${{ env.GCP_ZONE }} \
             --project ${{ env.GCP_PROJECT_ID }}
-
       - name: Install Helm
         uses: azure/setup-helm@v4
         with:
           version: '3.13.0'
-
       - name: Create Namespace
         run: |
           kubectl get ns k8-universe-project || kubectl create ns k8-universe-project
-
-      - name: Clean up any failed KEDA installation
-        continue-on-error: true
-        run: |
-          # Uninstall Helm release if it exists
-          helm status keda -n k8-universe-project &>/dev/null && helm uninstall keda -n k8-universe-project
-          helm status keda -n kube-system &>/dev/null && helm uninstall keda -n kube-system
-
-          # Delete cluster-wide resources if present
-          for res in clusterrole/keda-operator \
-                    clusterrolebinding/keda-operator \
-                    clusterrole/keda-external-metrics-reader \
-                    clusterrolebinding/keda-external-metrics-reader; do
-            kubectl delete $res --ignore-not-found || true
-          done
-
       - name: Install KEDA
         run: |
           helm repo add kedacore https://kedacore.github.io/charts
@@ -176,145 +44,36 @@ jobs:
             --set resources.operator.requests.memory=256Mi \
             --wait \
             --timeout 5m
-
-      - name: Verify KEDA Installation
+      - name: Wait for KEDA CRDs
         run: |
-          kubectl get pods -n k8-universe-project | grep keda
-          kubectl get crd | grep keda
-
-      - name: Output Summary
-        run: |
-          echo "### KEDA Deployment Status" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**KEDA Pods:**" >> $GITHUB_STEP_SUMMARY
-          kubectl get pods -n k8-universe-project | grep keda >> $GITHUB_STEP_SUMMARY
-
-  
-  deploy-prometheus:
-    name: 'Deploy Prometheus & Grafana'
-    runs-on: ubuntu-latest
-    needs: deploy-keda
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
-        with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
-
-      - name: Setup gcloud CLI
-        uses: google-github-actions/setup-gcloud@v2
-        with:
-          project_id: ${{ env.GCP_PROJECT_ID }}
-          install_components: 'gke-gcloud-auth-plugin'
-
-      - name: Get Cluster Credentials
-        run: |
-          gcloud container clusters get-credentials my-gke-cluster \
-            --zone ${{ env.GCP_ZONE }} \
-            --project ${{ env.GCP_PROJECT_ID }}
-
-      - name: Install Helm
-        uses: azure/setup-helm@v4
-        with:
-          version: '3.13.0'
-
-      - name: Create Monitoring Namespace
-        run: |
-          kubectl get ns monitoring || kubectl create ns monitoring
-
-      - name: Clean up any failed Prometheus installation
-        continue-on-error: true
-        run: |
-          helm uninstall prometheus -n monitoring || true
-          helm uninstall kube-prometheus-stack -n monitoring || true
-          sleep 10
-
-      - name: Install Prometheus Stack
-        run: |
-          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-          helm repo update
-          helm install prometheus prometheus-community/kube-prometheus-stack \
-            --namespace monitoring \
-            --version 65.1.1 \
-            --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
-            --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false \
-            --set prometheus.prometheusSpec.retention=7d \
-            --set prometheus.prometheusSpec.resources.requests.cpu=200m \
-            --set prometheus.prometheusSpec.resources.requests.memory=512Mi \
-            --set prometheus.prometheusSpec.resources.limits.cpu=500m \
-            --set prometheus.prometheusSpec.resources.limits.memory=1Gi \
-            --set grafana.enabled=true \
-            --set grafana.adminPassword=admin \
-            --set grafana.service.type=LoadBalancer \
-            --set grafana.resources.requests.cpu=100m \
-            --set grafana.resources.requests.memory=256Mi \
-            --set grafana.resources.limits.cpu=200m \
-            --set grafana.resources.limits.memory=512Mi \
-            --set alertmanager.enabled=false \
-            --wait \
-            --timeout 10m
-
-      - name: Wait for Grafana LoadBalancer
-        run: |
-          echo "Waiting for Grafana LoadBalancer IP..."
-          kubectl wait --for=jsonpath='{.status.loadBalancer.ingress}' \
-            service/prometheus-grafana -n monitoring --timeout=5m || true
-
-      - name: Get Grafana IP
-        id: grafana
-        run: |
-          GRAFANA_IP=$(kubectl get svc prometheus-grafana -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-          echo "ip=$GRAFANA_IP" >> $GITHUB_OUTPUT
-          echo "Grafana IP: $GRAFANA_IP"
-
-      - name: Verify Prometheus Installation
-        run: |
-          kubectl get pods -n monitoring
-          kubectl get svc -n monitoring
-
-      - name: Output Summary
-        run: |
-          echo "### Prometheus & Grafana Deployment Status" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Grafana Access:**" >> $GITHUB_STEP_SUMMARY
-          echo "- URL: http://${{ steps.grafana.outputs.ip }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Username: admin" >> $GITHUB_STEP_SUMMARY
-          echo "- Password: admin" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Monitoring Pods:**" >> $GITHUB_STEP_SUMMARY
-          kubectl get pods -n monitoring >> $GITHUB_STEP_SUMMARY
+          for crd in scaledobjects.keda.sh scaledjobs.keda.sh triggerauthentications.keda.sh clustertriggerauthentications.keda.sh cloudeventsources.eventing.keda.sh; do
+            kubectl wait --for=condition=established crd/$crd --timeout=120s
+          done
 
   deploy-hpa:
     name: 'Deploy Horizontal Pod Autoscaler'
     runs-on: ubuntu-latest
     needs: deploy-keda
-    
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
+      - uses: actions/checkout@v4
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
-
       - name: Setup gcloud CLI
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ env.GCP_PROJECT_ID }}
           install_components: 'gke-gcloud-auth-plugin'
-
       - name: Get Cluster Credentials
         run: |
           gcloud container clusters get-credentials my-gke-cluster \
             --zone ${{ env.GCP_ZONE }} \
             --project ${{ env.GCP_PROJECT_ID }}
-
-      - name: Install HPA Manifests
+      - name: Apply HPA Manifests
         run: |
           kubectl apply -f manifests/Namespace.yaml --namespace=k8-universe-project
           kubectl apply -f manifests/Service.yaml  --namespace=k8-universe-project
           kubectl apply -f manifests/DeploymentWithHPA.yaml --namespace=k8-universe-project
+      - name: Verify ScaledObjects
+        run: kubectl get scaledobject -n k8-universe-project

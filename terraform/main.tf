@@ -1,6 +1,6 @@
 terraform {
   required_version = ">= 1.0"
-  required_providers = {
+  required_providers {
     google = {
       source  = "hashicorp/google"
       version = "~> 5.0"
@@ -69,8 +69,8 @@ resource "google_container_cluster" "primary" {
   remove_default_node_pool = true
   initial_node_count       = 1
 
-  network    = google_compute_network.vpc.id
-  subnetwork = google_compute_subnetwork.subnet.id
+  network    = google_compute_network.vpc.name
+  subnetwork = google_compute_subnetwork.subnet.name
 
   ip_allocation_policy {
     cluster_secondary_range_name  = "pods"
@@ -80,7 +80,7 @@ resource "google_container_cluster" "primary" {
   deletion_protection = false
 }
 
-# Node pool
+# Separately managed node pool
 resource "google_container_node_pool" "primary_nodes" {
   name       = "${var.cluster_name}-node-pool"
   location   = var.zone
@@ -126,8 +126,4 @@ output "vpc_name" {
 
 output "subnet_name" {
   value = google_compute_subnetwork.subnet.name
-}
-
-output "instructions" {
-  value = "Step 3: GKE cluster added. Run: terraform plan"
 }

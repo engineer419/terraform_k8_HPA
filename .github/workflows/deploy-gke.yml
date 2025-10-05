@@ -43,6 +43,13 @@ jobs:
         with:
           project_id: ${{ env.GCP_PROJECT_ID }}
 
+      - name: Get Cluster Credentials (if exists)
+        continue-on-error: true
+        run: |
+          gcloud container clusters get-credentials my-gke-cluster \
+            --zone ${{ env.GCP_ZONE }} \
+            --project ${{ env.GCP_PROJECT_ID }}
+
       - name: Terraform Init
         run: terraform init
         
@@ -53,76 +60,125 @@ jobs:
       - name: Terraform Validate
         run: terraform validate
 
-      - name: Terraform Plan
-        id: plan
-        run: terraform plan -out=tfplan -no-color
-        continue-on-error: true
-
       - name: Import Existing Resources
+        continue-on-error: true
         run: |
           # Import VPC if it exists
-          gcloud compute networks describe my-gke-cluster-vpc --project=k8-cognitive-universe 2>/dev/null && \
-            terraform import google_compute_network.vpc projects/k8-cognitive-universe/global/networks/my-gke-cluster-vpc || true
+          terraform import google_compute_network.vpc projects/k8-cognitive-universe/global/networks/my-gke-cluster-vpc 2>/dev/null || true
           
           # Import Subnet if it exists
-          gcloud compute networks subnets describe my-gke-cluster-subnet --region=us-central1 --project=k8-cognitive-universe 2>/dev/null && \
-            terraform import google_compute_subnetwork.subnet projects/k8-cognitive-universe/regions/us-central1/subnetworks/my-gke-cluster-subnet || true
+          terraform import google_compute_subnetwork.subnet projects/k8-cognitive-universe/regions/us-central1/subnetworks/my-gke-cluster-subnet 2>/dev/null || true
           
           # Import Cluster if it exists
-          gcloud container clusters describe my-gke-cluster --zone=us-central1-a --project=k8-cognitive-universe 2>/dev/null && \
-            terraform import google_container_cluster.primary projects/k8-cognitive-universe/locations/us-central1-a/clusters/my-gke-cluster || true
+          terraform import google_container_cluster.primary projects/k8-cognitive-universe/locations/us-central1-a/clusters/my-gke-cluster 2>/dev/null || true
           
           # Import Node Pool if it exists
-          gcloud container node-pools describe my-gke-cluster-node-pool --cluster=my-gke-cluster --zone=us-central1-a --project=k8-cognitive-universe 2>/dev/null && \
-            terraform import google_container_node_pool.primary_nodes projects/k8-cognitive-universe/locations/us-central1-a/clusters/my-gke-cluster/nodePools/my-gke-cluster-node-pool || true
+          terraform import google_container_node_pool.primary_nodes projects/k8-cognitive-universe/locations/us-central1-a/clusters/my-gke-cluster/nodePools/my-gke-cluster-node-pool 2>/dev/null || true
 
-      - name: Comment Plan on PR
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const output = `#### Terraform Plan \`${{ steps.plan.outcome }}\`
-            
-            <details><summary>Show Plan</summary>
-            
-            \`\`\`terraform
-            ${{ steps.plan.outputs.stdout }}
-            \`\`\`
-            
-            </details>`;
-            
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: output
-            })
+      - name: Terraform Plan
+        id: plan
+        run: |
+          terraform plan -out=tfplan -no-color
+          terraform show -no-color tfplan > plan_output.txt
+          if grep -q "No changes" plan_output.txt; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          else
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+          fi
 
       - name: Terraform Apply
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        if: steps.plan.outputs.has_changes == 'true'
         run: terraform apply -auto-approve tfplan
 
       - name: Get Cluster Credentials
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: |
           gcloud container clusters get-credentials my-gke-cluster \
             --zone ${{ env.GCP_ZONE }} \
             --project ${{ env.GCP_PROJECT_ID }}
 
       - name: Verify Cluster
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: |
           kubectl get nodes
           kubectl cluster-info
 
       - name: Output Summary
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: |
-          echo "### GKE Cluster Deployed Successfully!" >> $GITHUB_STEP_SUMMARY
+          echo "### GKE Cluster Status" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Cluster Name:** my-gke-cluster" >> $GITHUB_STEP_SUMMARY
           echo "**Zone:** ${{ env.GCP_ZONE }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Project:** ${{ env.GCP_PROJECT_ID }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Changes Applied:** ${{ steps.plan.outputs.has_changes }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Nodes:**" >> $GITHUB_STEP_SUMMARY
           kubectl get nodes >> $GITHUB_STEP_SUMMARY
+
+  deploy-keda:
+    name: 'Deploy KEDA'
+    runs-on: ubuntu-latest
+    needs: terraform
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Setup gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Get Cluster Credentials
+        run: |
+          gcloud container clusters get-credentials my-gke-cluster \
+            --zone ${{ env.GCP_ZONE }} \
+            --project ${{ env.GCP_PROJECT_ID }}
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: '3.13.0'
+
+      - name: Create Namespace
+        run: |
+          kubectl get ns k8-universe-project || kubectl create ns k8-universe-project
+
+      - name: Clean up any failed KEDA installation
+        continue-on-error: true
+        run: |
+          helm uninstall keda -n k8-universe-project || true
+          kubectl delete crd scaledobjects.keda.sh || true
+          kubectl delete crd scaledjobs.keda.sh || true
+          kubectl delete crd triggerauthentications.keda.sh || true
+          kubectl delete crd clustertriggerauthentications.keda.sh || true
+          kubectl delete crd cloudeventsources.eventing.keda.sh || true
+          sleep 10
+
+      - name: Install KEDA
+        run: |
+          helm repo add kedacore https://kedacore.github.io/charts
+          helm repo update
+          helm install keda kedacore/keda \
+            --namespace k8-universe-project \
+            --version 2.14.0 \
+            --set resources.operator.limits.cpu=500m \
+            --set resources.operator.limits.memory=512Mi \
+            --set resources.operator.requests.cpu=100m \
+            --set resources.operator.requests.memory=256Mi \
+            --wait \
+            --timeout 5m
+
+      - name: Verify KEDA Installation
+        run: |
+          kubectl get pods -n k8-universe-project | grep keda
+          kubectl get crd | grep keda
+
+      - name: Output Summary
+        run: |
+          echo "### KEDA Deployment Status" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**KEDA Pods:**" >> $GITHUB_STEP_SUMMARY
+          kubectl get pods -n k8-universe-project | grep keda >> $GITHUB_STEP_SUMMARY

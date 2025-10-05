@@ -108,7 +108,6 @@ jobs:
     name: 'Deploy KEDA'
     runs-on: ubuntu-latest
     needs: terraform
-
     steps:
       - uses: actions/checkout@v4
 
@@ -140,22 +139,21 @@ jobs:
 
       - name: Ensure KEDA is Clean or Healthy
         run: |
-          if helm list -n k8-universe-project | grep -q '^keda'; then
-            echo "KEDA already installed. Checking CRDs..."
-            for crd in scaledobjects.keda.sh scaledjobs.keda.sh triggerauthentications.keda.sh clustertriggerauthentications.keda.sh; do
-              kubectl get crd $crd >/dev/null 2>&1 || MISSING_CRDS=true
-            done
-            if [ "$MISSING_CRDS" = true ]; then
-              echo "Some CRDs missing, cleaning KEDA release..."
-              helm uninstall keda -n k8-universe-project || true
-              for crd in scaledobjects.keda.sh scaledjobs.keda.sh triggerauthentications.keda.sh clustertriggerauthentications.keda.sh; do
-                kubectl delete crd $crd --ignore-not-found || true
-              done
-            else
-              echo "KEDA healthy. Skipping reinstall."
-              exit 0
-            fi
+          MISSING_CRDS=false
+          for crd in scaledobjects.keda.sh scaledjobs.keda.sh triggerauthentications.keda.sh clustertriggerauthentications.keda.sh; do
+            kubectl get crd $crd >/dev/null 2>&1 || MISSING_CRDS=true
+          done
+
+          if helm list -n k8-universe-project | grep -q '^keda' && [ "$MISSING_CRDS" = false ]; then
+            echo "KEDA healthy. Skipping reinstall."
+            exit 0
           fi
+
+          echo "Cleaning previous KEDA release and CRDs..."
+          helm uninstall keda -n k8-universe-project || true
+          for crd in scaledobjects.keda.sh scaledjobs.keda.sh triggerauthentications.keda.sh clustertriggerauthentications.keda.sh; do
+            kubectl delete crd $crd --ignore-not-found || true
+          done
 
       - name: Install KEDA
         run: |
@@ -189,14 +187,13 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**KEDA Pods:**" >> $GITHUB_STEP_SUMMARY
           kubectl get pods -n k8-universe-project | grep keda >> $GITHUB_STEP_SUMMARY
-  
+
   deploy-hpa:
     name: 'Deploy Horizontal Pod Autoscaler'
     runs-on: ubuntu-latest
     needs: deploy-keda
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
@@ -229,8 +226,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: deploy-hpa
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
@@ -258,8 +254,7 @@ jobs:
         run: |
           kubectl get ns monitoring || kubectl create ns monitoring
 
-      - name: Clean up any failed Prometheus installation
-        continue-on-error: true
+      - name: Ensure Prometheus is Clean
         run: |
           helm uninstall prometheus -n monitoring || true
           helm uninstall kube-prometheus-stack -n monitoring || true

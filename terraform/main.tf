@@ -1,6 +1,6 @@
 terraform {
   required_version = ">= 1.0"
-  required_providers {
+  required_providers = {
     google = {
       source  = "hashicorp/google"
       version = "~> 5.0"
@@ -66,13 +66,11 @@ resource "google_container_cluster" "primary" {
   name     = var.cluster_name
   location = var.zone
 
-  # We can't create a cluster with no node pool, so we create the smallest possible default
-  # node pool and immediately delete it.
   remove_default_node_pool = true
   initial_node_count       = 1
 
-  network    = google_compute_network.vpc.name
-  subnetwork = google_compute_subnetwork.subnet.name
+  network    = google_compute_network.vpc.id
+  subnetwork = google_compute_subnetwork.subnet.id
 
   ip_allocation_policy {
     cluster_secondary_range_name  = "pods"
@@ -82,7 +80,7 @@ resource "google_container_cluster" "primary" {
   deletion_protection = false
 }
 
-# Separately managed node pool
+# Node pool
 resource "google_container_node_pool" "primary_nodes" {
   name       = "${var.cluster_name}-node-pool"
   location   = var.zone
@@ -90,7 +88,7 @@ resource "google_container_node_pool" "primary_nodes" {
   node_count = 2
 
   node_config {
-    machine_type = "e2-medium" # 2 vCPU, 4GB RAM
+    machine_type = "e2-medium"
     disk_size_gb = 20
     disk_type    = "pd-standard"
 
@@ -108,6 +106,7 @@ resource "google_container_node_pool" "primary_nodes" {
   }
 }
 
+# Outputs
 output "cluster_name" {
   value = google_container_cluster.primary.name
 }

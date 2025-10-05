@@ -151,18 +151,9 @@ jobs:
       - name: Clean up any failed KEDA installation
         continue-on-error: true
         run: |
-          # Uninstall from any namespace if exists
+          # Uninstall Helm release if it exists
           helm status keda -n k8-universe-project &>/dev/null && helm uninstall keda -n k8-universe-project
           helm status keda -n kube-system &>/dev/null && helm uninstall keda -n kube-system
-
-          # Delete CRDs without hanging
-          for crd in scaledobjects.keda.sh \
-                    scaledjobs.keda.sh \
-                    triggerauthentications.keda.sh \
-                    clustertriggerauthentications.keda.sh \
-                    cloudeventsources.eventing.keda.sh; do
-            kubectl delete crd $crd --ignore-not-found --wait=false || true
-          done
 
           # Delete cluster-wide resources if present
           for res in clusterrole/keda-operator \
@@ -198,6 +189,7 @@ jobs:
           echo "**KEDA Pods:**" >> $GITHUB_STEP_SUMMARY
           kubectl get pods -n k8-universe-project | grep keda >> $GITHUB_STEP_SUMMARY
 
+  
   deploy-prometheus:
     name: 'Deploy Prometheus & Grafana'
     runs-on: ubuntu-latest

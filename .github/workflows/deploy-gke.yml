@@ -134,23 +134,14 @@ jobs:
         with:
           version: '3.13.0'
 
-      - name: Deploy KEDA
+      - name: Create Namespace
         run: |
-          # Create namespace if missing
           kubectl get ns k8-universe-project || kubectl create ns k8-universe-project
 
-          # Skip install if KEDA is already running
-          if kubectl get pods -n k8-universe-project | grep -q keda; then
-            echo "KEDA already running. Skipping installation."
-          else
-            # Clean up previous failed installs (idempotent)
-            helm uninstall keda -n k8-universe-project || true
-            helm uninstall keda -n kube-system || true
-            kubectl delete crd scaledobjects.keda.sh scaledjobs.keda.sh triggerauthentications.keda.sh clustertriggerauthentications.keda.sh cloudeventsources.eventing.keda.sh || true
-            kubectl delete clusterrole keda-operator keda-external-metrics-reader || true
-            kubectl delete clusterrolebinding keda-operator keda-external-metrics-reader || true
-
-            # Install KEDA via Helm
+      - name: Install or Skip KEDA
+        run: |
+          if ! kubectl get pods -n k8-universe-project | grep -q keda; then
+            echo "Installing KEDA..."
             helm repo add kedacore https://kedacore.github.io/charts
             helm repo update
             helm install keda kedacore/keda \
@@ -162,20 +153,30 @@ jobs:
               --set resources.operator.requests.memory=256Mi \
               --wait \
               --timeout 5m
+
+            echo "Waiting for CRDs..."
+            for crd in scaledobjects.keda.sh scaledjobs.keda.sh triggerauthentications.keda.sh clustertriggerauthentications.keda.sh cloudeventsources.eventing.keda.sh; do
+              until kubectl get crd $crd >/dev/null 2>&1; do
+                echo "Waiting for CRD $crd..."
+                sleep 5
+              done
+            done
+          else
+            echo "KEDA already running. Skipping installation and CRD wait."
           fi
 
-          # Wait for CRDs to exist
-          for crd in scaledobjects.keda.sh scaledjobs.keda.sh triggerauthentications.keda.sh clustertriggerauthentications.keda.sh cloudeventsources.eventing.keda.sh; do
-            until kubectl get crd $crd >/dev/null 2>&1; do
-              echo "Waiting for CRD $crd..."
-              sleep 5
-            done
-          done
+      - name: Verify KEDA Installation
+        run: |
+          kubectl get pods -n k8-universe-project | grep keda || echo "No KEDA pods found"
+          kubectl get crd | grep keda || echo "No KEDA CRDs found"
 
-          # Verify KEDA
-          kubectl get pods -n k8-universe-project | grep keda
-          kubectl get crd | grep keda
-
+      - name: Output Summary
+        run: |
+          echo "### KEDA Deployment Status" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**KEDA Pods:**" >> $GITHUB_STEP_SUMMARY
+          kubectl get pods -n k8-universe-project | grep keda >> $GITHUB_STEP_SUMMARY
+  
   deploy-hpa:
     name: 'Deploy Horizontal Pod Autoscaler'
     runs-on: ubuntu-latest

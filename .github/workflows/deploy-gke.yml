@@ -136,24 +136,41 @@ jobs:
       - name: Create Namespace
         run: |
           kubectl get ns k8-universe-project || kubectl create ns k8-universe-project
-
-      - name: Ensure KEDA is Clean or Healthy
+    
+      - name: Ensure KEDA is installed and healthy
         run: |
-          MISSING_CRDS=false
-          for crd in scaledobjects.keda.sh scaledjobs.keda.sh triggerauthentications.keda.sh clustertriggerauthentications.keda.sh; do
-            kubectl get crd $crd >/dev/null 2>&1 || MISSING_CRDS=true
-          done
+          set -e
 
-          if helm list -n k8-universe-project | grep -q '^keda' && [ "$MISSING_CRDS" = false ]; then
-            echo "KEDA healthy. Skipping reinstall."
-            exit 0
+          # Check if Helm release exists and is deployed
+          if helm status keda -n k8-universe-project >/dev/null 2>&1; then
+            echo "KEDA release found."
+            # Check CRDs
+            MISSING_CRDS=""
+            for crd in scaledobjects.keda.sh scaledjobs.keda.sh triggerauthentications.keda.sh clustertriggerauthentications.keda.sh; do
+              kubectl get crd $crd >/dev/null 2>&1 || MISSING_CRDS="$MISSING_CRDS $crd"
+            done
+            if [ -z "$MISSING_CRDS" ]; then
+              echo "All required CRDs exist. Skipping KEDA install."
+              exit 0
+            else
+              echo "Some CRDs are missing: $MISSING_CRDS. Reinstalling KEDA..."
+              helm uninstall keda -n k8-universe-project || true
+              for crd in $MISSING_CRDS; do
+                kubectl delete crd $crd --ignore-not-found || true
+              done
+            fi
           fi
 
-          echo "Cleaning previous KEDA release and CRDs..."
-          helm uninstall keda -n k8-universe-project || true
-          for crd in scaledobjects.keda.sh scaledjobs.keda.sh triggerauthentications.keda.sh clustertriggerauthentications.keda.sh; do
-            kubectl delete crd $crd --ignore-not-found || true
-          done
+          # Install KEDA only if needed
+          helm repo add kedacore https://kedacore.github.io/charts || true
+          helm repo update
+          helm install keda kedacore/keda \
+            --namespace k8-universe-project \
+            --version 2.14.0 \
+            --set installCRDs=true \
+            --wait \
+            --timeout 5m
+
 
       - name: Install KEDA
         run: |

@@ -151,24 +151,26 @@ jobs:
       - name: Clean up any failed KEDA installation
         continue-on-error: true
         run: |
-          # Uninstall from any namespace
-          helm uninstall keda -n k8-universe-project || true
-          helm uninstall keda -n kube-system || true
-          
-          # Delete CRDs
-          kubectl delete crd scaledobjects.keda.sh || true
-          kubectl delete crd scaledjobs.keda.sh || true
-          kubectl delete crd triggerauthentications.keda.sh || true
-          kubectl delete crd clustertriggerauthentications.keda.sh || true
-          kubectl delete crd cloudeventsources.eventing.keda.sh || true
-          
-          # Delete cluster-wide resources
-          kubectl delete clusterrole keda-operator || true
-          kubectl delete clusterrolebinding keda-operator || true
-          kubectl delete clusterrole keda-external-metrics-reader || true
-          kubectl delete clusterrolebinding keda-external-metrics-reader || true
-          
-          sleep 10
+          # Uninstall from any namespace if exists
+          helm status keda -n k8-universe-project &>/dev/null && helm uninstall keda -n k8-universe-project
+          helm status keda -n kube-system &>/dev/null && helm uninstall keda -n kube-system
+
+          # Delete CRDs without hanging
+          for crd in scaledobjects.keda.sh \
+                    scaledjobs.keda.sh \
+                    triggerauthentications.keda.sh \
+                    clustertriggerauthentications.keda.sh \
+                    cloudeventsources.eventing.keda.sh; do
+            kubectl delete crd $crd --ignore-not-found --wait=false || true
+          done
+
+          # Delete cluster-wide resources if present
+          for res in clusterrole/keda-operator \
+                    clusterrolebinding/keda-operator \
+                    clusterrole/keda-external-metrics-reader \
+                    clusterrolebinding/keda-external-metrics-reader; do
+            kubectl delete $res --ignore-not-found || true
+          done
 
       - name: Install KEDA
         run: |

@@ -17,7 +17,7 @@ env:
 
 jobs:
   terraform:
-    name: Terraform Apply
+    name: 'Terraform Apply'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -105,38 +105,54 @@ jobs:
           kubectl get nodes >> $GITHUB_STEP_SUMMARY
 
   deploy-keda:
-    name: Deploy KEDA
+    name: 'Deploy KEDA'
     runs-on: ubuntu-latest
     needs: terraform
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
+
       - name: Setup gcloud CLI
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ env.GCP_PROJECT_ID }}
           install_components: 'gke-gcloud-auth-plugin'
+
       - name: Get Cluster Credentials
         run: |
           gcloud container clusters get-credentials my-gke-cluster \
             --zone ${{ env.GCP_ZONE }} \
             --project ${{ env.GCP_PROJECT_ID }}
+
       - name: Install Helm
         uses: azure/setup-helm@v4
         with:
           version: '3.13.0'
-      - name: Create Namespace
+
+      - name: Deploy KEDA
         run: |
+          # Create namespace if missing
           kubectl get ns k8-universe-project || kubectl create ns k8-universe-project
-      - name: Install KEDA
-        run: |
-          
-          helm repo add kedacore https://kedacore.github.io/charts
-          helm repo update
-          if ! helm status keda -n k8-universe-project &>/dev/null; then
+
+          # Skip install if KEDA is already running
+          if kubectl get pods -n k8-universe-project | grep -q keda; then
+            echo "KEDA already running. Skipping installation."
+          else
+            # Clean up previous failed installs (idempotent)
+            helm uninstall keda -n k8-universe-project || true
+            helm uninstall keda -n kube-system || true
+            kubectl delete crd scaledobjects.keda.sh scaledjobs.keda.sh triggerauthentications.keda.sh clustertriggerauthentications.keda.sh cloudeventsources.eventing.keda.sh || true
+            kubectl delete clusterrole keda-operator keda-external-metrics-reader || true
+            kubectl delete clusterrolebinding keda-operator keda-external-metrics-reader || true
+
+            # Install KEDA via Helm
+            helm repo add kedacore https://kedacore.github.io/charts
+            helm repo update
             helm install keda kedacore/keda \
               --namespace k8-universe-project \
               --version 2.14.0 \
@@ -146,76 +162,95 @@ jobs:
               --set resources.operator.requests.memory=256Mi \
               --wait \
               --timeout 5m
-          else
-            echo "KEDA is already installed, skipping."
           fi
-      - name: Wait for KEDA CRDs
-        run: |
+
+          # Wait for CRDs to exist
           for crd in scaledobjects.keda.sh scaledjobs.keda.sh triggerauthentications.keda.sh clustertriggerauthentications.keda.sh cloudeventsources.eventing.keda.sh; do
-            kubectl wait --for=condition=established crd/$crd --timeout=120s
+            until kubectl get crd $crd >/dev/null 2>&1; do
+              echo "Waiting for CRD $crd..."
+              sleep 5
+            done
           done
 
+          # Verify KEDA
+          kubectl get pods -n k8-universe-project | grep keda
+          kubectl get crd | grep keda
+
   deploy-hpa:
-    name: Deploy Horizontal Pod Autoscaler
+    name: 'Deploy Horizontal Pod Autoscaler'
     runs-on: ubuntu-latest
     needs: deploy-keda
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
+
       - name: Setup gcloud CLI
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ env.GCP_PROJECT_ID }}
           install_components: 'gke-gcloud-auth-plugin'
+
       - name: Get Cluster Credentials
         run: |
           gcloud container clusters get-credentials my-gke-cluster \
             --zone ${{ env.GCP_ZONE }} \
             --project ${{ env.GCP_PROJECT_ID }}
+
       - name: Apply HPA Manifests
         run: |
           kubectl apply -f manifests/Namespace.yaml --namespace=k8-universe-project
-          kubectl apply -f manifests/Service.yaml --namespace=k8-universe-project
+          kubectl apply -f manifests/Service.yaml  --namespace=k8-universe-project
           kubectl apply -f manifests/DeploymentWithHPA.yaml --namespace=k8-universe-project
+
       - name: Verify ScaledObjects
         run: kubectl get scaledobject -n k8-universe-project
 
   deploy-prometheus:
-    name: Deploy Prometheus & Grafana
+    name: 'Deploy Prometheus & Grafana'
     runs-on: ubuntu-latest
     needs: deploy-hpa
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
+
       - name: Setup gcloud CLI
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ env.GCP_PROJECT_ID }}
           install_components: 'gke-gcloud-auth-plugin'
+
       - name: Get Cluster Credentials
         run: |
           gcloud container clusters get-credentials my-gke-cluster \
             --zone ${{ env.GCP_ZONE }} \
             --project ${{ env.GCP_PROJECT_ID }}
+
       - name: Install Helm
         uses: azure/setup-helm@v4
         with:
           version: '3.13.0'
+
       - name: Create Monitoring Namespace
         run: |
           kubectl get ns monitoring || kubectl create ns monitoring
+
       - name: Clean up any failed Prometheus installation
         continue-on-error: true
         run: |
           helm uninstall prometheus -n monitoring || true
           helm uninstall kube-prometheus-stack -n monitoring || true
           sleep 10
+
       - name: Install Prometheus Stack
         run: |
           helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
@@ -240,21 +275,25 @@ jobs:
             --set alertmanager.enabled=false \
             --wait \
             --timeout 10m
+
       - name: Wait for Grafana LoadBalancer
         run: |
           echo "Waiting for Grafana LoadBalancer IP..."
           kubectl wait --for=jsonpath='{.status.loadBalancer.ingress}' \
             service/prometheus-grafana -n monitoring --timeout=5m || true
+
       - name: Get Grafana IP
         id: grafana
         run: |
           GRAFANA_IP=$(kubectl get svc prometheus-grafana -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
           echo "ip=$GRAFANA_IP" >> $GITHUB_OUTPUT
           echo "Grafana IP: $GRAFANA_IP"
+
       - name: Verify Prometheus Installation
         run: |
           kubectl get pods -n monitoring
           kubectl get svc -n monitoring
+
       - name: Output Summary
         run: |
           echo "### Prometheus & Grafana Deployment Status" >> $GITHUB_STEP_SUMMARY

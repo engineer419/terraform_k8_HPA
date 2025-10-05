@@ -140,9 +140,9 @@ jobs:
 
       - name: Install HPA Manifests
         run: |
-          kubectl apply -f manifests/Namespace.yaml
-          kubectl apply -f manifests/Service.yaml
-          kubectl apply -f manifests/DeploymentWithHPA.yaml
+          kubectl apply -f manifests/Namespace.yaml --namespace=k8-universe-project
+          kubectl apply -f manifests/Service.yaml  --namespace=k8-universe-project
+          kubectl apply -f manifests/DeploymentWithHPA.yaml  --namespace=k8-universe-project
 
   deploy-keda:
     name: 'Deploy KEDA'

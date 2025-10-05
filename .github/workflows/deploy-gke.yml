@@ -58,6 +58,24 @@ jobs:
         run: terraform plan -out=tfplan -no-color
         continue-on-error: true
 
+      - name: Import Existing Resources
+        run: |
+          # Import VPC if it exists
+          gcloud compute networks describe my-gke-cluster-vpc --project=k8-cognitive-universe 2>/dev/null && \
+            terraform import google_compute_network.vpc projects/k8-cognitive-universe/global/networks/my-gke-cluster-vpc || true
+          
+          # Import Subnet if it exists
+          gcloud compute networks subnets describe my-gke-cluster-subnet --region=us-central1 --project=k8-cognitive-universe 2>/dev/null && \
+            terraform import google_compute_subnetwork.subnet projects/k8-cognitive-universe/regions/us-central1/subnetworks/my-gke-cluster-subnet || true
+          
+          # Import Cluster if it exists
+          gcloud container clusters describe my-gke-cluster --zone=us-central1-a --project=k8-cognitive-universe 2>/dev/null && \
+            terraform import google_container_cluster.primary projects/k8-cognitive-universe/locations/us-central1-a/clusters/my-gke-cluster || true
+          
+          # Import Node Pool if it exists
+          gcloud container node-pools describe my-gke-cluster-node-pool --cluster=my-gke-cluster --zone=us-central1-a --project=k8-cognitive-universe 2>/dev/null && \
+            terraform import google_container_node_pool.primary_nodes projects/k8-cognitive-universe/locations/us-central1-a/clusters/my-gke-cluster/nodePools/my-gke-cluster-node-pool || true
+
       - name: Comment Plan on PR
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v7

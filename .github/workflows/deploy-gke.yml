@@ -112,6 +112,37 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Nodes:**" >> $GITHUB_STEP_SUMMARY
           kubectl get nodes >> $GITHUB_STEP_SUMMARY
+  deploy-hpa:
+    name: 'Deploy Horizontal Pod Autoscaler'
+    runs-on: ubuntu-latest
+    needs: terraform
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Setup gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+          install_components: 'gke-gcloud-auth-plugin'
+
+      - name: Get Cluster Credentials
+        run: |
+          gcloud container clusters get-credentials my-gke-cluster \
+            --zone ${{ env.GCP_ZONE }} \
+            --project ${{ env.GCP_PROJECT_ID }}
+
+      - name: Install HPA Manifests
+        run: |
+          kubectl apply -f manifests/Namespace.yaml
+          kubectl apply -f manifests/Service.yaml
+          kubectl apply -f manifests/DeploymentWithHPA.yaml
 
   deploy-keda:
     name: 'Deploy KEDA'

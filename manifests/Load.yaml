@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: busybox-load-generator
+  labels:
+    app: load-generator
+spec:
+  restartPolicy: Never
+  containers:
+  - name: busybox
+    image: busybox
+    command: ["sh", "-c"]
+    args:
+      - |
+        # Start 100 parallel load loops with no sleep
+        for i in $(seq 1 100); do
+          (
+            while true; do
+              wget -q -O- http://nginx-service >/dev/null 2>&1 &
+              wget -q -O- http://nginx-service >/dev/null 2>&1 &
+              wget -q -O- http://nginx-service >/dev/null 2>&1 &
+              wait
+            done
+          ) &
+        done
+        wait

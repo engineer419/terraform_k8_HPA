@@ -17,13 +17,11 @@ env:
 
 jobs:
   terraform:
-    name: 'Terraform Apply'
+    name: Terraform Apply
     runs-on: ubuntu-latest
-    
     defaults:
       run:
         working-directory: ./terraform
-    
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -53,7 +51,7 @@ jobs:
 
       - name: Terraform Init
         run: terraform init
-        
+
       - name: Terraform Format Check
         run: terraform fmt -check
         continue-on-error: true
@@ -64,16 +62,9 @@ jobs:
       - name: Import Existing Resources
         continue-on-error: true
         run: |
-          # Import VPC if it exists
           terraform import google_compute_network.vpc projects/k8-cognitive-universe/global/networks/my-gke-cluster-vpc 2>/dev/null || true
-          
-          # Import Subnet if it exists
           terraform import google_compute_subnetwork.subnet projects/k8-cognitive-universe/regions/us-central1/subnetworks/my-gke-cluster-subnet 2>/dev/null || true
-          
-          # Import Cluster if it exists
           terraform import google_container_cluster.primary projects/k8-cognitive-universe/locations/us-central1-a/clusters/my-gke-cluster 2>/dev/null || true
-          
-          # Import Node Pool if it exists
           terraform import google_container_node_pool.primary_nodes projects/k8-cognitive-universe/locations/us-central1-a/clusters/my-gke-cluster/nodePools/my-gke-cluster-node-pool 2>/dev/null || true
 
       - name: Terraform Plan
@@ -112,15 +103,9 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Nodes:**" >> $GITHUB_STEP_SUMMARY
           kubectl get nodes >> $GITHUB_STEP_SUMMARY
-  
-  jobs:
-  terraform:
-    name: 'Terraform Apply'
-    runs-on: ubuntu-latest
-    # ... your existing terraform steps ...
 
   deploy-keda:
-    name: 'Deploy KEDA'
+    name: Deploy KEDA
     runs-on: ubuntu-latest
     needs: terraform
     steps:
@@ -166,7 +151,7 @@ jobs:
           done
 
   deploy-hpa:
-    name: 'Deploy Horizontal Pod Autoscaler'
+    name: Deploy Horizontal Pod Autoscaler
     runs-on: ubuntu-latest
     needs: deploy-keda
     steps:
@@ -188,53 +173,44 @@ jobs:
       - name: Apply HPA Manifests
         run: |
           kubectl apply -f manifests/Namespace.yaml --namespace=k8-universe-project
-          kubectl apply -f manifests/Service.yaml  --namespace=k8-universe-project
+          kubectl apply -f manifests/Service.yaml --namespace=k8-universe-project
           kubectl apply -f manifests/DeploymentWithHPA.yaml --namespace=k8-universe-project
       - name: Verify ScaledObjects
         run: kubectl get scaledobject -n k8-universe-project
-  
-  deploy-prometheus:
-    name: 'Deploy Prometheus & Grafana'
-    runs-on: ubuntu-latest
-    needs: deploy-keda
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
 
+  deploy-prometheus:
+    name: Deploy Prometheus & Grafana
+    runs-on: ubuntu-latest
+    needs: deploy-hpa
+    steps:
+      - uses: actions/checkout@v4
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
-
       - name: Setup gcloud CLI
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ env.GCP_PROJECT_ID }}
           install_components: 'gke-gcloud-auth-plugin'
-
       - name: Get Cluster Credentials
         run: |
           gcloud container clusters get-credentials my-gke-cluster \
             --zone ${{ env.GCP_ZONE }} \
             --project ${{ env.GCP_PROJECT_ID }}
-
       - name: Install Helm
         uses: azure/setup-helm@v4
         with:
           version: '3.13.0'
-
       - name: Create Monitoring Namespace
         run: |
           kubectl get ns monitoring || kubectl create ns monitoring
-
       - name: Clean up any failed Prometheus installation
         continue-on-error: true
         run: |
           helm uninstall prometheus -n monitoring || true
           helm uninstall kube-prometheus-stack -n monitoring || true
           sleep 10
-
       - name: Install Prometheus Stack
         run: |
           helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
@@ -259,25 +235,21 @@ jobs:
             --set alertmanager.enabled=false \
             --wait \
             --timeout 10m
-
       - name: Wait for Grafana LoadBalancer
         run: |
           echo "Waiting for Grafana LoadBalancer IP..."
           kubectl wait --for=jsonpath='{.status.loadBalancer.ingress}' \
             service/prometheus-grafana -n monitoring --timeout=5m || true
-
       - name: Get Grafana IP
         id: grafana
         run: |
           GRAFANA_IP=$(kubectl get svc prometheus-grafana -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
           echo "ip=$GRAFANA_IP" >> $GITHUB_OUTPUT
           echo "Grafana IP: $GRAFANA_IP"
-
       - name: Verify Prometheus Installation
         run: |
           kubectl get pods -n monitoring
           kubectl get svc -n monitoring
-
       - name: Output Summary
         run: |
           echo "### Prometheus & Grafana Deployment Status" >> $GITHUB_STEP_SUMMARY
@@ -289,4 +261,3 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Monitoring Pods:**" >> $GITHUB_STEP_SUMMARY
           kubectl get pods -n monitoring >> $GITHUB_STEP_SUMMARY
-

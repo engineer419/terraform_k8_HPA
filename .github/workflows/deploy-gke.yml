@@ -151,12 +151,23 @@ jobs:
       - name: Clean up any failed KEDA installation
         continue-on-error: true
         run: |
+          # Uninstall from any namespace
           helm uninstall keda -n k8-universe-project || true
+          helm uninstall keda -n kube-system || true
+          
+          # Delete CRDs
           kubectl delete crd scaledobjects.keda.sh || true
           kubectl delete crd scaledjobs.keda.sh || true
           kubectl delete crd triggerauthentications.keda.sh || true
           kubectl delete crd clustertriggerauthentications.keda.sh || true
           kubectl delete crd cloudeventsources.eventing.keda.sh || true
+          
+          # Delete cluster-wide resources
+          kubectl delete clusterrole keda-operator || true
+          kubectl delete clusterrolebinding keda-operator || true
+          kubectl delete clusterrole keda-external-metrics-reader || true
+          kubectl delete clusterrolebinding keda-external-metrics-reader || true
+          
           sleep 10
 
       - name: Install KEDA
